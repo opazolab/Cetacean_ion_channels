@@ -1,0 +1,110 @@
+# Supplementary File of the manuscript "Evolution of ion channels in cetaceans, a natural experiment in the tree of life", 
+# Last update on march, 2024.
+# This file contains the general information processing pipeline with main bash, in-home scripts and program commandlines.
+# In-home scripts will be available upon request.
+  
+# First step. Obtain the lengthiest isoform for each gene:
+awk -F " " '{ if ($0 ~ /^>/) { print ">"$4" |"$1;} else { print $0}}' Homo_sapiens.GRCh38.pep.all.fa > Homo_sapiens.GRCh38.pep.all.fa_filtbygene
+
+#In vi replace:
+:%s/|>/| /g
+:%s/gene://g
+
+# Having done that:
+cat Homo_sapiens.GRCh38.pep.all.fa_filtbygene |
+awk '/^>/ {if(N>0) printf("\n"); printf("%s\t",$0);N++;next;} {printf("%s",$0);} END {if(N>0) printf("\n");}' |
+tr "." "\t" |
+awk -F '\t'  '{printf("%s\t%d\n",$0,length($4));}' |
+sort -t $'\t' -k1,1 -k5,5nr |
+sort -t $'\t' -k1,1 -u -s |
+sed 's/\t/./;s/\t/./' |
+cut -f 1,2 |
+tr "\t" "\n" > Homo_sapiens.GRCh38.pep.all.fa_proteins_bygen
+
+# With that, we have the longest protein for each gene. Then,get the IDs:
+awk -F ' ' '{print $3}' Homo_sapiens.GRCh38.pep.all.fa_proteins_bygen > Homo_sapiens.GRCh38.pep.all.fa_proteins_bygen2
+
+# Delete empty lines:
+grep -Ev "^$" Homo_sapiens.GRCh38.pep.all.fa_proteins_bygen2 > Homo_sapiens.GRCh38.pep.all.fa_proteins_bygen2_2
+
+# Obtained the transcript IDs, we need the full Fasta ID to retrieve the sequences:
+grep -Fwf Homo_sapiens.GRCh38.pep.all.fa_proteins_bygen2_2 Mus_musculus.GRCm39.pep.all.fa > Full_ids_Human
+
+# To retrieve the sequences, we used a python script.
+python faSomeRecords.py --fasta Homo_sapiens.GRCh38.pep.all.fa --list Full_ids_Human -o Human_proteins.fasta
+
+# Having the largest protein for each gene, we used TMHMM:
+tmhmm Human_proteins.fasta > Human_Tmhmm
+
+# To filter the transmembrane segments:
+awk '/Number of predicted TMHs/ {print $0}' Human_Tmhmm > Human_Tmhmm_filt
+awk BEGIN'{OFS=FS=" "}{if($7>=2 && $7<=35) print $0}' Human_Tmhmm_filt > Human_Tmhmm_filt2
+
+# Again, to obtain the IDs and retrieve the sequences:
+awk BEGIN'{OFS=FS=" "}{print $2}' Human_Tmhmm_filt2 > Human_ids_2
+grep -Fwf Human_ids_2 Homo_sapiens.GRCh38.pep.all.fa > Full_Human_Ids2
+python faSomeRecords.py --fasta Homo_sapiens.GRCh38.pep.all.fa --list Full_Human_Ids2 -o Human_proteins_final.fasta
+
+# Then, we run rpsblast on the proteins, against CDD:
+rpsblast+ -query ../Human_proteins_final.fasta -db path/to/database -outfmt 11 -out Human_proteins.asn
+
+# Then, filter rpsblast results with rpsbproc:
+rpsbproc -i Human_proteins.asn -o Human_result_rpsbproc.out -e 0.001 -m rep
+
+# Then, we need to filter the file to obtain the proteins that have ion channels domains:
+perl -lne 'print if /^QUERY/ .. /ENDDOMAINS/' Human_result_rpsbproc.out > Human_filt1
+awk 'BEGIN{OFS=FS="\t"}{if($1~/^QUERY/) print $0; else if($3~ /Specific/ || /Superfamily/) print $0}' Human_filt1 > Human_filt2
+
+# Open the file prints_line_startswith_EN_from_file.py and change the file that you will be processing, in this example Human_filt2.
+python prints_line_startswith_EN_from_file.py > Human_filt3
+awk 'BEGIN{OFS=FS="\t"}{if($1 ~ /^QUERY/) print $5;else print $4}' Human_filt3 > Human_filt4
+awk '{print $1}' Human_filt4 > Human_filt5
+grep -Ev "^$" Human_filt5 > Human_filt6
+
+# Open the file grep_EN_pattern_from_Human_filt6_onCdd_channel_file.pl and change the file that you will be processing, in this example Human_filt6.
+perl grep_EN_pattern_from_Human_filt6_onCdd_channel_file.pl > Human_channels
+
+# Open the file grep_EN_pattern_from_Human_filt6_onCdd_channel_file.pl and change the file that you will be processing, in this example Human_channels.
+python print_line_startswith_QUERY_from_file.py > Human_channels_2
+
+# The file Human_channels_2 has the IDs of Ion channels found, then you have to repeat the process described above to retrieve the fasta sequence from the 
+# complete IDs using grep and faSomeRecords.py
+# Having the final fasta file of ion channels for each species we run OMA.
+# The fasta files need to be put in the DB carpet present in the directory in which you will run OMA.
+# To run OMA just install it and type OMA.
+# After that you will obtain a carpet called Output where you will find the obtained results.
+# Here, it will depend on what analysis you want to do. To identify the OMAGroups we used the matrix files Orthologous Groups (PhyleticProfileOMAGroups.txt) 
+# and according to the presence of the OG in the species you can filter the list with a simple awk that evaluates each column (specie). For example, 
+# we obtained the OGs that were present in all 15 species (You can change the filter as you need). This can be easily done with the command:
+awk 'BEGIN{OFS=FS="\t"}{if($2!=0 && $4!=0 && $8!=0 && $12!=0 && $13!=0 && $15!=0 && $16!=0 && $7!=0 && $10!=0 && $3!=0 && $5!=0 && $6!=0 && $9!=0 && $11!=0 && $14!=0) print $0}' PhyleticProfileOMAGroups.txt
+
+# Now, you can copy the OGs obtained to another folder using the first column to identify the names. 
+# Having done that, we used MAFFT and PAL2NAL to prepare the input files for PAML.
+# For our site analysis, we first obtained the sequences of cetaceans only from the OG files, to do this we followed the next steps:
+# Convert the OG multiline fasta in one-line fasta file:
+awk '/^>/ {printf("\n%s\n",$0);next; } { printf("%s",$0);} END {printf("\n");}' < path/to/OG > OG_line
+
+# This file is used as input for a perl script that takes only cetaceans sequences.
+perl grep_OGXX_from_selected_cetaceans.pl > OG_site
+
+# Then, we aligned the OG sequences using MAFFT:
+mafft path/to/file/OG_site > OG.msa 
+
+# Also, we need to obtain the corresponding CDS file for each OG.
+# For this, we need to convert the multiline fasta in one line fasta file:
+awk '/^>/ {printf("\n%s\n",$0);next; } { printf("%s",$0);} END {printf("\n");}' Homo_sapiens.GRCh38.cds.all.fa > Homo_sapiens.GRCh38.cds.all.fa_line
+
+# Now, we need the transcripts IDs to obtain the CDS for each transcript present in the OG file, here we used grep to retrieve the fasta descriptors and then copy the transcripts IDs:
+grep ">" path/to/OG
+
+# After, run the bash script site_cetaceos.sh giving it a file name to use for the new CDS file, for example:
+bash site_cetaceans.sh CDS_OGXXX.fa
+
+# Running, the script will show the name that you configure for each species, for example Blue for Blue whale, Orca for Orcinus orca, etc. You can configure that in the script. When the name of the specie is shown you need to enter the transcript ID.  
+# Using the generated msa protein file and the CDS file run Pal2Nal to create the PAML input files. The command used was:
+pal2nal.pl path/to/OG.msa path/to/CDS_OGXXX.fa -output paml
+
+# Now, we are ready to run PAML. To run this program, configure the control file and create a tree file in Newick format. 
+# The other file you will be using if you want to run CAFE to analyze the gene families is the Hierarchical Orthologous Groups file. 
+# We manually curated this file deleting the HOGs that we considered to not be ion channels.
+# In CAFE you can consult the Manual and the scripts that we used to run it. We analyzed two models, the first one calculating two lambdas and the second one calculating three lambdas.
